@@ -5,6 +5,8 @@ use base64::prelude::*;
 use bytes::{Buf, BufMut, BytesMut};
 use nmt_rs::NamespaceMerkleHasher;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tendermint::abci::response::Commit;
+use tendermint::merkle::MerkleHash;
 use tendermint::crypto::sha256::HASH_SIZE;
 use tendermint::{crypto, merkle};
 use tendermint_proto::serializers::cow_str::CowStr;
@@ -33,6 +35,7 @@ impl Commitment {
         Self::from_shares(namespace, &shares)
     }
 
+    
     /// Generate the commitment from the given shares.
     pub fn from_shares(namespace: Namespace, mut shares: &[Share]) -> Result<Commitment> {
         // the commitment is the root of a merkle mountain range with max tree size
@@ -67,6 +70,64 @@ impl Commitment {
 
         Ok(Commitment(hash))
     }
+
+    /// The commitment is a fancy merkle root of the shares.
+    /// Create a merkle proof of a share, into the blob commitment
+    pub fn proof_into_commitment(namespace: Namespace, mut shares: &[Share], index: usize) -> Result<Commitment> {
+        // the commitment is the root of a merkle mountain range with max tree size
+        // determined by the number of roots required to create a share commitment
+        // over that blob. The size of the tree is only increased if the number of
+        // subtree roots surpasses a constant threshold.
+        let subtree_width = subtree_width(shares.len() as u64, appconsts::SUBTREE_ROOT_THRESHOLD);
+        let tree_sizes = merkle_mountain_range_sizes(shares.len() as u64, subtree_width);
+
+        let mut leaf_sets: Vec<&[_]> = Vec::with_capacity(tree_sizes.len());
+
+        for (i, size) in tree_sizes.iter().enumerate() {
+            println!("tree {} size: {}", i, size);
+            let (leafs, rest) = shares.split_at(*size as usize);
+            leaf_sets.push(leafs);
+            shares = rest;
+        }
+
+        let mut num_shares_pushed = 0;
+        // create the commitments by pushing each leaf set onto an nmt
+        let mut subtree_roots: Vec<RawNamespacedHash> = Vec::with_capacity(leaf_sets.len());
+        for leaf_set in leaf_sets {
+            // create the nmt
+            let mut tree = Nmt::with_hasher(NamespacedSha2Hasher::with_ignore_max_ns(true));
+            for (i, leaf_share) in leaf_set.iter().enumerate() {
+                tree.push_leaf(leaf_share.as_ref(), namespace.into())
+                    .map_err(Error::Nmt)?;
+                num_shares_pushed += 1;
+                if num_shares_pushed == index {
+                    println!("in root: {:?}", tree.root().to_array());
+                    let proof = tree.get_index_with_proof(i);
+                    println!("proof: {:?}", proof);
+                }
+            }
+            // add the root
+            subtree_roots.push(tree.root().to_array());
+        }
+
+        println!("calling hash");
+        let hash = simple_hash_from_byte_vectors::<crypto::default::Sha256>(&subtree_roots);
+
+        Ok(Commitment(hash))
+    }
+}
+
+/// Copy-pasted from tendermint
+/// Compute a simple Merkle root from vectors of arbitrary byte vectors.
+/// The leaves of the tree are the bytes of the given byte vectors in
+/// the given order.
+pub fn simple_hash_from_byte_vectors<H>(byte_vecs: &[impl AsRef<[u8]>]) -> merkle::Hash
+where
+    H: MerkleHash + Default,
+{
+    println!("in simple hash");
+    let mut hasher = H::default();
+    hasher.hash_byte_vectors(byte_vecs)
 }
 
 impl Serialize for Commitment {
