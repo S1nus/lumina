@@ -20,7 +20,7 @@ mod native {
     use jsonrpsee::core::client::{BatchResponse, ClientT, Subscription, SubscriptionClientT};
     use jsonrpsee::core::params::BatchRequestBuilder;
     use jsonrpsee::core::traits::ToRpcParams;
-    use jsonrpsee::core::ClientError;
+    use jsonrpsee::core::{ClientError, TEN_MB_SIZE_BYTES};
     use jsonrpsee::http_client::{HeaderMap, HttpClient, HttpClientBuilder};
     use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
     use serde::de::DeserializeOwned;
@@ -62,6 +62,7 @@ mod native {
                 Some("ws") | Some("wss") => Client::Ws(
                     WsClientBuilder::default()
                         .set_headers(headers)
+                        .max_response_size(TEN_MB_SIZE_BYTES*2)
                         .build(conn_str)
                         .await?,
                 ),
